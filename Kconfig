@@ -1,0 +1,75 @@
+
+menuconfig AKNANO
+	bool "Aktualzr-nano Firmware Over-the-Air support"
+	select NVS
+	select FLASH
+	select REBOOT
+	select HWINFO
+	select NET_TCP
+	select NET_SOCKETS
+	select IMG_MANAGER
+	select NETWORKING
+	select HTTP_CLIENT
+	select DNS_RESOLVER
+	select JSON_LIBRARY
+	select BOOTLOADER_MCUBOOT
+	select MPU_ALLOW_FLASH_WRITE
+	select IMG_ERASE_PROGRESSIVELY
+	select NET_SOCKETS_POSIX_NAMES
+	help
+	  Our Description
+
+if AKNANO
+config AKNANO_POLL_INTERVAL
+	int "Time to poll interval (in minutes)"
+	default 5
+	range 1 43200
+	help
+	  Set the interval that the update server will be polled.
+	  This time interval is zero and 43200 minutes(30 days).
+
+config AKNANO_SERVER
+	string "User address for the server"
+	default ""
+	help
+	  Configure the hawkbit server address.
+
+config AKNANO_SERVER_PORT
+	string "Port address for the server"
+	default "8080"
+	help
+	  Configure the hawkbit port number.
+
+config AKNANO_TAG
+	string "Aktualizr-nano tag"
+	default "devel"
+	help
+	  Aktualizr-nano tag.
+
+
+
+config NET_SAMPLE_APP_MAX_ITERATIONS
+	int "Number of times to Publish sample MQTT messages"
+	default 500
+	help
+	  Send sample MQTT messages this many times in a MQTT connection
+	  before exiting. A value of zero means that the messages are sent
+	  forever.
+
+config NET_SAMPLE_APP_MAX_CONNECTIONS
+	int "Number of times to connect to the MQTT server"
+	default 0
+	help
+	  Number of times to connect to the MQTT server. With each connection
+	  send NET_SAMPLE_APP_MAX_ITERATIONS amount of MQTT sample messages.
+	  A value of zero means to continue forever.
+
+
+module = AK_NANO
+module-str = Log Level for aktualzr-nano
+module-help = Enables logging for aktualzr-nano code.
+
+source "Kconfig.zephyr"
+
+endif
+
