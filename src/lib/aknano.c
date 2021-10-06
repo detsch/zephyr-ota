@@ -366,7 +366,7 @@ static int get_http_data_and_length(struct http_response *rsp,
 
 		/* 
 		 * WARNING: As of Zephyr, 2.6.0, the bellow code is not enough to 
-		 * identify the header size, because rsp->body_start may not be not set
+		 * identify the header size, because rsp->body_start may not be set
 		 */
 		if (rsp->body_start != NULL && rsp->recv_buf != NULL) {
 			header_size = rsp->body_start - rsp->recv_buf;
