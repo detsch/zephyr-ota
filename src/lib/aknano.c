@@ -34,10 +34,11 @@ LOG_MODULE_REGISTER(aknano);
 #include "aknano_json.h"
 
 
-#if defined(CONFIG_NET_SOCKETS_SOCKOPT_TLS)
 #define CA_CERTIFICATE_TAG 1
 #include <net/tls_credentials.h>
-#endif
+#include "ca_certificate.h"
+
+/* #define AK_NANO_DRY_RUN */
 
 #define ADDRESS_ID 1
 
@@ -126,6 +127,68 @@ static union {
 
 static struct k_work_delayable aknano_work_handle;
 
+static int setup_socket(sa_family_t family, const char *server, int port,
+			int *sock, struct sockaddr *addr, socklen_t addr_len)
+{
+	const char *family_str = family == AF_INET ? "IPv4" : "IPv6";
+	int ret = 0;
+
+	if (IS_ENABLED(CONFIG_NET_SOCKETS_SOCKOPT_TLS)) {
+		sec_tag_t sec_tag_list[] = {
+			CA_CERTIFICATE_TAG,
+		};
+
+		*sock = socket(family, SOCK_STREAM, IPPROTO_TLS_1_2);
+		if (*sock >= 0) {
+			ret = setsockopt(*sock, SOL_TLS, TLS_SEC_TAG_LIST,
+					 sec_tag_list, sizeof(sec_tag_list));
+			if (ret < 0) {
+				LOG_ERR("Failed to set %s secure option (%d)",
+					family_str, -errno);
+				ret = -errno;
+			}
+
+			ret = setsockopt(*sock, SOL_TLS, TLS_HOSTNAME,
+					 TLS_PEER_HOSTNAME,
+			       sizeof(TLS_PEER_HOSTNAME));
+			if (ret < 0) {
+				LOG_ERR("Failed to set %s TLS_HOSTNAME "
+					"option (%d)", family_str, -errno);
+				ret = -errno;
+			}
+		}
+	} else {
+		*sock = socket(family, SOCK_STREAM, IPPROTO_TCP);
+	}
+
+	if (*sock < 0) {
+		LOG_ERR("Failed to create %s HTTP socket (%d)", family_str,
+			-errno);
+	}
+
+	return ret;
+}
+
+static int connect_socket(sa_family_t family, const char *server, int port,
+			  int *sock, struct sockaddr *addr, socklen_t addr_len)
+{
+	int ret;
+
+	ret = setup_socket(family, server, port, sock, addr, addr_len);
+	if (ret < 0 || *sock < 0) {
+		return -1;
+	}
+
+	ret = connect(*sock, addr, addr_len);
+	if (ret < 0) {
+		LOG_ERR("Cannot connect to %s remote (%d)",
+			family == AF_INET ? "IPv4" : "IPv6",
+			-errno);
+		ret = -errno;
+	}
+
+	return ret;
+}
 
 static bool start_http_client(void)
 {
@@ -135,18 +198,17 @@ static bool start_http_client(void)
 	int resolve_attempts = 10;
 	LOG_INF("start_http_client");
 
-#if defined(CONFIG_NET_SOCKETS_SOCKOPT_TLS)
-	int protocol = IPPROTO_TLS_1_2;
-#else
-	int protocol = IPPROTO_TCP;
-#endif
-	if (IS_ENABLED(CONFIG_NET_IPV6)) {
-		hints.ai_family = AF_INET6;
-	} else if (IS_ENABLED(CONFIG_NET_IPV4)) {
-		hints.ai_family = AF_INET;
+	if (IS_ENABLED(CONFIG_NET_SOCKETS_SOCKOPT_TLS)) {
+		ret = tls_credential_add(CA_CERTIFICATE_TAG,
+					 TLS_CREDENTIAL_CA_CERTIFICATE,
+					 ca_certificate,
+					 sizeof(ca_certificate));
+		if (ret < 0) {
+			LOG_ERR("Failed to register public certificate: %d",
+				ret);
+			return ret;
+		}
 	}
-
-	hints.ai_socktype = SOCK_STREAM;
 
 	LOG_INF("start_http_client %s:%s",
 			CONFIG_AKNANO_SERVER, CONFIG_AKNANO_SERVER_PORT);
@@ -165,35 +227,12 @@ static bool start_http_client(void)
 		return false;
 	}
 
-	LOG_INF("start_http_client creating TCP socket");
-	hb_context.sock = socket(addr->ai_family, SOCK_STREAM, protocol);
-	if (hb_context.sock < 0) {
-		LOG_ERR("Failed to create TCP socket");
-		goto err;
-	}
+	connect_socket(addr->ai_family, CONFIG_AKNANO_SERVER,
+			CONFIG_AKNANO_SERVER_PORT, &hb_context.sock,
+			addr, addr->ai_addrlen);
 
-#if defined(CONFIG_NET_SOCKETS_SOCKOPT_TLS)
-	sec_tag_t sec_tag_opt[] = {
-		CA_CERTIFICATE_TAG,
-	};
-
-	if (setsockopt(hb_context.sock, SOL_TLS, TLS_SEC_TAG_LIST, sec_tag_opt,
-		       sizeof(sec_tag_opt)) < 0) {
-		LOG_ERR("Failed to set TLS_TAG option");
-		goto err_sock;
-	}
-
-	if (setsockopt(hb_context.sock, SOL_TLS, TLS_HOSTNAME,
-		       CONFIG_AKNANO_SERVER,
-		       sizeof(CONFIG_AKNANO_SERVER)) < 0) {
-		goto err_sock;
-	}
-#endif
-	for (int i=0; i<8; i++) {
-		LOG_INF("start_http_client addr[%d]=%d", i, addr->ai_addr->data[i]);
-	}
-
-	if (connect(hb_context.sock, addr->ai_addr, addr->ai_addrlen) < 0) {
+	ret = connect(hb_context.sock, addr->ai_addr, addr->ai_addrlen);
+	if (ret < 0) {
 		LOG_ERR("Failed to connect to Server");
 		goto err_sock;
 	}
@@ -353,54 +392,41 @@ static int get_http_data_and_length(struct http_response *rsp,
 {
 	size_t header_size = 0;
 
+	*body_data = rsp->recv_buf;
+	*body_len = rsp->data_len;
+
 	if (*http_content_size == 0) {
 		if (rsp->body_found == 0) {
 			LOG_ERR("Callback called w/o HTTP header found!");
 			return -1;
 		}
 
-		if (rsp->body_start) {
-			LOG_INF("body_start is set");
-			*body_data = rsp->body_start;
-		}
-
-		/* 
+		/*
 		 * WARNING: As of Zephyr, 2.6.0, the bellow code is not enough to 
 		 * identify the header size, because rsp->body_start may not be set
 		 */
 		if (rsp->body_start != NULL && rsp->recv_buf != NULL) {
 			header_size = rsp->body_start - rsp->recv_buf;
-			*body_len -= header_size;
 			LOG_INF("Setting header_size=%u", header_size);
-		}
-
-		*http_content_size = rsp->content_length;
-
-		LOG_INF("FIRST: body_len=%u, header=%d http_content_size=%u", 
-		   *body_len, (rsp->body_start - rsp->recv_buf), *http_content_size);
-	}
-
-
-	if (*body_data == NULL) {
-		*body_data = rsp->recv_buf;
-		*body_len = rsp->data_len;
-
-		/* 
-		 * WARNING: applying workaround for header_size
-		 */
-		if (downloaded_size == 0 && header_size == 0) {
-			if (*http_content_size >= 100000)
+			*body_data = rsp->body_start;
+		} else {
+			if (rsp->content_length >= 100000)
 				header_size	= 258;
 			else
 				header_size	= 256;
-
-		 	LOG_WRN("Removing header_size=%u from data\n", header_size);
-		 	*body_len -= header_size;
+			LOG_WRN("Forcing header_size=%u", header_size);
+			LOG_INF("%s", *body_data);
 		}
+
+		*body_len -= header_size;
+		*http_content_size = rsp->content_length;
+
+		LOG_INF("FIRST: body_len=%u, header=%d http_content_size=%u", 
+			*body_len, (rsp->body_start - rsp->recv_buf), *http_content_size);
 	}
 
 	LOG_DBG("down_size=%u rsp->body_start=%p rsp->recv_buf=%p *body_len=%u", 
-	    downloaded_size, rsp->body_start, rsp->recv_buf, *body_len); 
+	   downloaded_size, rsp->body_start, rsp->recv_buf, *body_len); 
 
 	return 0;
 }
@@ -535,9 +561,13 @@ static void response_cb(struct http_response *rsp,
 	type = enum_for_http_req_string(userdata);
 	switch (type) {
 	case AKNANO_PROBE:
-		ret = get_http_data_and_length(rsp, &body_data, &body_len, 
-		    &hb_context.dl.http_content_size, hb_context.dl.downloaded_size);
-
+		if (rsp->http_status_code != 200) {
+			LOG_WRN("Got HTTP error: %d (%s)", rsp->http_status_code, rsp->http_status);
+			ret = -1;
+		} else {
+			ret = get_http_data_and_length(rsp, &body_data, &body_len,
+				&hb_context.dl.http_content_size, hb_context.dl.downloaded_size);
+		}
 		if (ret < 0) {
 			hb_context.code_status = AKNANO_METADATA_ERROR;
 			break; // goto error;
@@ -584,16 +614,20 @@ static void response_cb(struct http_response *rsp,
 
 		if (ret < 0) {
 			hb_context.code_status = AKNANO_METADATA_ERROR;
-			break; // goto error;
+			break;
 		}
 
 		if (body_data != NULL) {
 			LOG_INF("Writting %d bytes to flash", body_len);
 			if (hb_context.dl.downloaded_size < 10000)
 				LOG_HEXDUMP_INF(body_data, body_len, "DATA: ");
+#ifdef AK_NANO_DRY_RUN
+			ret = 0;
+#else
 			ret = flash_img_buffered_write(&hb_context.flash_ctx,
 				body_data, body_len,
 				final_data == HTTP_DATA_FINAL);
+#endif
 			if (ret < 0) {
 				LOG_ERR("flash write error");
 				hb_context.code_status = AKNANO_DOWNLOAD_ERROR;
@@ -783,11 +817,14 @@ enum aknano_response aknano_probe(void)
 	memset(&aknano_results.dep, 0, sizeof(aknano_results.dep));
 	memset(hb_context.response_data, 0, RESPONSE_BUFFER_SIZE);
 
+
+#ifndef AK_NANO_DRY_RUN
 	LOG_INF("Erasing image_1");
 	ret = boot_erase_img_bank(FLASH_AREA_ID(image_1));
 	if (ret) {
 		LOG_ERR("Failed to erase second slot");
 	}
+#endif
 
 	LOG_INF("Starting image download for uri=%s", hb_context.url_buffer);
 	flash_img_init(&hb_context.flash_ctx);
@@ -804,6 +841,7 @@ enum aknano_response aknano_probe(void)
 	}
 	LOG_INF("Requesting MCUBoot image swap");
 
+#ifndef AK_NANO_DRY_RUN
 	if (boot_request_upgrade(BOOT_UPGRADE_PERMANENT)) {
 		LOG_ERR("Download failed");
 		hb_context.code_status = AKNANO_DOWNLOAD_ERROR;
@@ -812,6 +850,7 @@ enum aknano_response aknano_probe(void)
 		/* aknano_device_acid_update(hb_context.json_action_id); */
 		LOG_INF("Image written");
 	}
+#endif
 
 	hb_context.dl.http_content_size = 0;
 
@@ -847,8 +886,10 @@ static void autohandler(struct k_work *work)
 	case AKNANO_UPDATE_INSTALLED:
 		LOG_INF("Update Installed. Please Reboot");
 
+#ifndef AK_NANO_DRY_RUN
 		LOG_INF("Rebooting");
 		sys_reboot(SYS_REBOOT_WARM);
+#endif
 		break;
 
 	case AKNANO_DOWNLOAD_ERROR:
