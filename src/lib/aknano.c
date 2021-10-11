@@ -38,7 +38,7 @@ LOG_MODULE_REGISTER(aknano);
 #include <net/tls_credentials.h>
 #include "ca_certificate.h"
 
-/* #define AK_NANO_DRY_RUN */
+/* #define AKNANO_DRY_RUN */
 
 #define ADDRESS_ID 1
 
@@ -309,7 +309,7 @@ static int aknano_handle_img_confirmed(void)
 	int ret;
 
 	image_ok = boot_is_img_confirmed();
-	LOG_INF("Image is %s confirmed OK", image_ok ? "" : " not");
+	LOG_INF("Image is%s confirmed OK", image_ok ? "" : " not");
 	if (!image_ok) {
 		ret = boot_write_img_confirmed();
 		if (ret < 0) {
@@ -317,7 +317,7 @@ static int aknano_handle_img_confirmed(void)
 			return ret;
 		}
 
-		LOG_DBG("Marked image as OK");
+		LOG_INF("Marked image as OK");
 		ret = boot_erase_img_bank(FLASH_AREA_ID(image_1));
 		if (ret) {
 			LOG_ERR("Failed to erase second slot");
@@ -449,7 +449,6 @@ static bool target_is_higher(struct aknano_target_parsed *target,
                              struct aknano_target *selected_target)
 {
 	int32_t version = strtol(target->custom.version, NULL, 10);
-	LOG_INF("target_is_higher? %d > %d?", version, selected_target->version);
 	return version > selected_target->version;
 }
 
@@ -483,9 +482,8 @@ static int handle_json_data(uint8_t *data, size_t len)
 	int ret;
 	struct aknano_target_parsed target;
 
-	data[len] = '\0';
-	LOG_INF("Received JSON: len=%d", len);
-	/* LOG_INF("'%s'\n", data); */
+	/* data[len] = '\0'; */
+	/* LOG_DBG("JSON: '%s'\n", data); */
 
 	memset(&target, 0, sizeof(target));
 	target.length = 99;
@@ -503,8 +501,8 @@ static int handle_json_data(uint8_t *data, size_t len)
 	update_selected_target_if_necessary(&target, 
 		&hb_context.aknano_json_data.selected_target);
 
-	LOG_INF("Parsed len=%d version=%s uri=%s", 
-		target.length, target.custom.version, target.custom.uri);
+	LOG_INF("Parsed JSON total len=%d version=%s uri=%s", 
+		len, target.custom.version, target.custom.uri);
 	return 0;
 }
 
@@ -562,7 +560,8 @@ static void response_cb(struct http_response *rsp,
 	switch (type) {
 	case AKNANO_PROBE:
 		if (rsp->http_status_code != 200) {
-			LOG_WRN("Got HTTP error: %d (%s)", rsp->http_status_code, rsp->http_status);
+			LOG_WRN("Got HTTP error: %d (%s)",
+				rsp->http_status_code, rsp->http_status);
 			ret = -1;
 		} else {
 			ret = get_http_data_and_length(rsp, &body_data, &body_len,
@@ -609,11 +608,16 @@ static void response_cb(struct http_response *rsp,
 		break;
 
 	case AKNANO_DOWNLOAD:
-		ret = get_http_data_and_length(rsp, &body_data, &body_len, 
-		    &hb_context.dl.http_content_size, hb_context.dl.downloaded_size);
-
+		if (rsp->http_status_code != 200) {
+			LOG_WRN("Got HTTP error: %d (%s)",
+				rsp->http_status_code, rsp->http_status);
+			ret = -1;
+		} else {
+			ret = get_http_data_and_length(rsp, &body_data, &body_len,
+				&hb_context.dl.http_content_size, hb_context.dl.downloaded_size);
+		}
 		if (ret < 0) {
-			hb_context.code_status = AKNANO_METADATA_ERROR;
+			hb_context.code_status = AKNANO_DOWNLOAD_ERROR;
 			break;
 		}
 
@@ -621,7 +625,8 @@ static void response_cb(struct http_response *rsp,
 			LOG_INF("Writting %d bytes to flash", body_len);
 			if (hb_context.dl.downloaded_size < 10000)
 				LOG_HEXDUMP_INF(body_data, body_len, "DATA: ");
-#ifdef AK_NANO_DRY_RUN
+			/* k_sleep(K_MSEC(100)); */
+#ifdef AKNANO_DRY_RUN
 			ret = 0;
 #else
 			ret = flash_img_buffered_write(&hb_context.flash_ctx,
@@ -741,7 +746,7 @@ enum aknano_response aknano_probe(void)
 	memset(hb_context.response_data, 0, RESPONSE_BUFFER_SIZE);
 	k_sem_init(&hb_context.semaphore, 0, 1);
 
-	if (0 && !boot_is_img_confirmed()) {
+	if (!boot_is_img_confirmed()) {
 		LOG_ERR("The current image is not confirmed");
 		hb_context.code_status = AKNANO_UNCONFIRMED_IMAGE;
 		goto error;
@@ -818,7 +823,7 @@ enum aknano_response aknano_probe(void)
 	memset(hb_context.response_data, 0, RESPONSE_BUFFER_SIZE);
 
 
-#ifndef AK_NANO_DRY_RUN
+#ifndef AKNANO_DRY_RUN
 	LOG_INF("Erasing image_1");
 	ret = boot_erase_img_bank(FLASH_AREA_ID(image_1));
 	if (ret) {
@@ -841,8 +846,8 @@ enum aknano_response aknano_probe(void)
 	}
 	LOG_INF("Requesting MCUBoot image swap");
 
-#ifndef AK_NANO_DRY_RUN
-	if (boot_request_upgrade(BOOT_UPGRADE_PERMANENT)) {
+#ifndef AKNANO_DRY_RUN
+	if (boot_request_upgrade(BOOT_UPGRADE_TEST)) {
 		LOG_ERR("Download failed");
 		hb_context.code_status = AKNANO_DOWNLOAD_ERROR;
 	} else {
@@ -886,7 +891,7 @@ static void autohandler(struct k_work *work)
 	case AKNANO_UPDATE_INSTALLED:
 		LOG_INF("Update Installed. Please Reboot");
 
-#ifndef AK_NANO_DRY_RUN
+#ifndef AKNANO_DRY_RUN
 		LOG_INF("Rebooting");
 		sys_reboot(SYS_REBOOT_WARM);
 #endif
