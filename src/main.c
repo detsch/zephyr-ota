@@ -38,7 +38,7 @@ LOG_MODULE_REGISTER(aknano_sample);
 #define READ_BUTTON_SLEEP_TIME_MS   1000
 
 /* scheduling priority used by each thread */
-#define PRIORITY 7
+#define PRIORITY -1
 
 static void read_button_loop(void)
 {
@@ -78,7 +78,7 @@ K_THREAD_DEFINE(blink_led_id, STACKSIZE, read_button_loop, NULL, NULL, NULL,
  		PRIORITY, 0, 0);
 
 K_THREAD_DEFINE(main_thread_id, STACKSIZE, main_thread, NULL, NULL, NULL,
-		-1, 0, 0);
+		PRIORITY, 0, 0);
 
 K_THREAD_DEFINE(mqtt_app_id, STACKSIZE, mqtt_start_app, NULL, NULL, NULL,
  		PRIORITY, 0, 0);
