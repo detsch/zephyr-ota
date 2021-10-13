@@ -210,6 +210,7 @@ static bool start_http_client(void)
 	while (resolve_attempts--) {
 		ret = getaddrinfo(CONFIG_AKNANO_SERVER, CONFIG_AKNANO_SERVER_PORT,
 				  &hints, &addr);
+		LOG_INF("DNS result=%d", ret);
 		if (ret == 0) {
 			break;
 		}
@@ -218,7 +219,7 @@ static bool start_http_client(void)
 	}
 
 	if (ret != 0) {
-		LOG_ERR("Could not resolve dns");
+		LOG_ERR("Could not resolve DNS. result=%d", ret);
 		return false;
 	}
 
