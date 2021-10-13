@@ -48,7 +48,7 @@ LOG_MODULE_REGISTER(aknano);
 #define STATUS_BUFFER_SIZE 200
 #define DOWNLOAD_HTTP_SIZE 200
 #define DEPLOYMENT_BASE_SIZE 50
-#define RESPONSE_BUFFER_SIZE 1100
+#define RESPONSE_BUFFER_SIZE 1500
 
 #define AKNANO_JSON_BUFFER_SIZE 1024
 #define NETWORK_TIMEOUT (2 * MSEC_PER_SEC)
@@ -61,11 +61,8 @@ LOG_MODULE_REGISTER(aknano);
 #define SLOT1_SIZE FLASH_AREA_SIZE(image_1)
 #define HTTP_HEADER_CONTENT_TYPE_JSON "application/json;charset=UTF-8"
 
-#define AKNANO_JSON_URL "/default/controller/v1"
-
-
-#if ((CONFIG_AKNANO_POLL_INTERVAL > 1)	\
-	&& (CONFIG_AKNANO_POLL_INTERVAL < 43200))
+#if ((CONFIG_AKNANO_POLL_INTERVAL >= 1)	\
+	&& (CONFIG_AKNANO_POLL_INTERVAL <= 43200))
 static uint32_t poll_sleep = (CONFIG_AKNANO_POLL_INTERVAL * 60 * MSEC_PER_SEC);
 #else
 static uint32_t poll_sleep = (300 * MSEC_PER_SEC);
@@ -104,10 +101,9 @@ struct aknano_download {
 static struct aknano_context {
 	int sock;
 	int32_t action_id;
-	uint8_t *response_data;
+	uint8_t response_data[RESPONSE_BUFFER_SIZE];
 	struct aknano_json_data aknano_json_data;
 	int32_t json_action_id;
-	struct k_sem semaphore;
 	size_t url_buffer_size;
 	size_t status_buffer_size;
 	struct aknano_download dl;
@@ -127,8 +123,7 @@ static union {
 
 static struct k_work_delayable aknano_work_handle;
 
-static int setup_socket(sa_family_t family, const char *server, int port,
-			int *sock, struct sockaddr *addr, socklen_t addr_len)
+static int setup_socket(sa_family_t family, int *sock)
 {
 	const char *family_str = family == AF_INET ? "IPv4" : "IPv6";
 	int ret = 0;
@@ -169,12 +164,12 @@ static int setup_socket(sa_family_t family, const char *server, int port,
 	return ret;
 }
 
-static int connect_socket(sa_family_t family, const char *server, int port,
+static int connect_socket(sa_family_t family,
 			  int *sock, struct sockaddr *addr, socklen_t addr_len)
 {
 	int ret;
 
-	ret = setup_socket(family, server, port, sock, addr, addr_len);
+	ret = setup_socket(family, sock);
 	if (ret < 0 || *sock < 0) {
 		return -1;
 	}
@@ -193,8 +188,8 @@ static int connect_socket(sa_family_t family, const char *server, int port,
 static bool start_http_client(void)
 {
 	int ret = -1;
-	struct addrinfo *addr;
-	struct addrinfo hints;
+	struct zsock_addrinfo *addr;
+	struct zsock_addrinfo hints;
 	int resolve_attempts = 10;
 	LOG_INF("start_http_client");
 
@@ -227,11 +222,9 @@ static bool start_http_client(void)
 		return false;
 	}
 
-	connect_socket(addr->ai_family, CONFIG_AKNANO_SERVER,
-			CONFIG_AKNANO_SERVER_PORT, &hb_context.sock,
-			addr, addr->ai_addrlen);
+	ret = connect_socket(addr->ai_family, &hb_context.sock,
+			addr->ai_addr, addr->ai_addrlen);
 
-	ret = connect(hb_context.sock, addr->ai_addr, addr->ai_addrlen);
 	if (ret < 0) {
 		LOG_ERR("Failed to connect to Server");
 		goto err_sock;
@@ -242,7 +235,6 @@ static bool start_http_client(void)
 
 err_sock:
 	close(hb_context.sock);
-err:
 	freeaddrinfo(addr);
 	return false;
 }
@@ -268,39 +260,6 @@ static int aknano_time2sec(const char *s)
 	} else {
 		return sec;
 	}
-}
-
-/*
- * Update sleep interval, based on results from hawkbit base polling
- * resource
- */
-static void aknano_update_sleep(struct aknano_ctl_res *aknano_res)
-{
-	uint32_t sleep_time;
-	const char *sleep = aknano_res->config.polling.sleep;
-
-	if (strlen(sleep) != AKNANO_SLEEP_LENGTH) {
-		LOG_ERR("Invalid poll sleep: %s", sleep);
-	} else {
-		sleep_time = aknano_time2sec(sleep);
-		if (sleep_time > 0 && poll_sleep !=
-		    (MSEC_PER_SEC * sleep_time)) {
-			LOG_DBG("New poll sleep %d seconds", sleep_time);
-			poll_sleep = sleep_time * MSEC_PER_SEC;
-		}
-	}
-}
-
-static void aknano_dump_base(struct aknano_ctl_res *r)
-{
-	LOG_DBG("config.polling.sleep=%s",
-		log_strdup(r->config.polling.sleep));
-	LOG_DBG("_links.deploymentBase.href=%s",
-		log_strdup(r->_links.deploymentBase.href));
-	LOG_DBG("_links.configData.href=%s",
-		log_strdup(r->_links.configData.href));
-	LOG_DBG("_links.cancelAction.href=%s",
-		log_strdup(r->_links.cancelAction.href));
 }
 
 static int aknano_handle_img_confirmed(void)
@@ -510,6 +469,7 @@ static void aknano_handle_manifest_data(uint8_t *dst, size_t *offset,
                                   uint8_t *src, size_t len)
 {
 	static int bracket_level; /* TODO: move to context structure */
+	static bool trunc_wrn_printed = false;
 	bool is_relevant_data;
 	uint8_t *p = src;
 
@@ -533,14 +493,22 @@ static void aknano_handle_manifest_data(uint8_t *dst, size_t *offset,
 			break;
 		}
 		if (is_relevant_data) {
-			*(dst + *offset) = *p;
-			(*offset)++;
+			if (*offset < RESPONSE_BUFFER_SIZE) {
+				*(dst + *offset) = *p;
+				(*offset)++;
+			} else if (!trunc_wrn_printed) {
+				LOG_WRN("Truncating incomming data"
+						" (target description limit is %d)",
+						RESPONSE_BUFFER_SIZE);
+				trunc_wrn_printed = true;
+			}
 
 			if (bracket_level == 3) {
 				*(dst + *offset) = '\0';
 				/* A complete target section was received. Process it */
 				handle_json_data(dst, *offset);
 				is_relevant_data = false;
+				trunc_wrn_printed = false;
 				*offset = 0;
 			}
 		}
@@ -649,10 +617,6 @@ static void response_cb(struct http_response *rsp,
 				hb_context.dl.download_progress);
 		}
 
-		if (final_data == HTTP_DATA_FINAL) {
-			k_sem_give(&hb_context.semaphore);
-		}
-
 		break;
 	}
 }
@@ -742,9 +706,6 @@ enum aknano_response aknano_probe(void)
 	LOG_INF("aknano_probe");
 
 	memset(&hb_context, 0, sizeof(hb_context));
-	hb_context.response_data = malloc(RESPONSE_BUFFER_SIZE);
-	memset(hb_context.response_data, 0, RESPONSE_BUFFER_SIZE);
-	k_sem_init(&hb_context.semaphore, 0, 1);
 
 	if (!boot_is_img_confirmed()) {
 		LOG_ERR("The current image is not confirmed");
@@ -790,13 +751,6 @@ enum aknano_response aknano_probe(void)
 	if (hb_context.code_status == AKNANO_METADATA_ERROR) {
 		goto error;
 	}
-
-	if (aknano_results.base.config.polling.sleep) {
-		/* Update the sleep time. */
-		aknano_update_sleep(&aknano_results.base);
-	}
-
-	aknano_dump_base(&aknano_results.base);
 
 	if (hb_context.aknano_json_data.selected_target.version <= 0) {
 	 	hb_context.code_status = AKNANO_NO_UPDATE;
@@ -910,6 +864,7 @@ static void autohandler(struct k_work *work)
 		break;
 	}
 
+	LOG_INF("poll_sleep=%u", poll_sleep);
 	k_work_reschedule(&aknano_work_handle, K_MSEC(poll_sleep));
 }
 

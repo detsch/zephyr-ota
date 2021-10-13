@@ -23,7 +23,7 @@ LOG_MODULE_REGISTER(aknano_sample);
 #include <net/net_mgmt.h>
 
 #include "lib/aknano.h"
-#include "mqtt_publisher.h""
+#include "mqtt_publisher.h"
 
 
 #define ANSI_COLOR_RED     "\x1b[31m"
@@ -44,7 +44,6 @@ static void read_button_loop(void)
 {
 	const struct device *dev;
 	int button_state = 0;
-	int ret = 0;
 
 	LOG_INF("Button: %s", DT_GPIO_LABEL(DT_ALIAS(sw0), gpios));
 	dev = device_get_binding(DT_GPIO_LABEL(DT_ALIAS(sw0), gpios));
