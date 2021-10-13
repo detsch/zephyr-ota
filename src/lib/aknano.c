@@ -817,7 +817,6 @@ cleanup:
 	cleanup_connection();
 
 error:
-	free(hb_context.response_data);
 	return hb_context.code_status;
 }
 
