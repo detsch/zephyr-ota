@@ -188,12 +188,13 @@ static int connect_socket(sa_family_t family,
 static bool start_http_client(void)
 {
 	int ret = -1;
+	static bool certificate_registered = false;
 	struct zsock_addrinfo *addr;
 	struct zsock_addrinfo hints;
 	int resolve_attempts = 10;
 	LOG_INF("start_http_client");
 
-	if (IS_ENABLED(CONFIG_NET_SOCKETS_SOCKOPT_TLS)) {
+	if (!certificate_registered && IS_ENABLED(CONFIG_NET_SOCKETS_SOCKOPT_TLS)) {
 		ret = tls_credential_add(CA_CERTIFICATE_TAG,
 					 TLS_CREDENTIAL_CA_CERTIFICATE,
 					 ca_certificate,
@@ -203,6 +204,7 @@ static bool start_http_client(void)
 				ret);
 			return ret;
 		}
+		certificate_registered = true;
 	}
 
 	LOG_INF("start_http_client %s:%s",
