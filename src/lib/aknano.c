@@ -433,9 +433,10 @@ static void update_selected_target_if_necessary(
 	
 	if (target_is_higher(target, selected_target)) {
 		update_selected_target(target, selected_target);
-		LOG_INF("Updated higher version to %d uri='%s' updatedAt='%s'", 
-						selected_target->version, selected_target->uri,
-						selected_target->updatedAt);
+		LOG_INF("Updated higher version to %d uri='%s' updatedAt='%s'",
+						selected_target->version,
+						log_strdup(selected_target->uri),
+						log_strdup(selected_target->updatedAt));
 	}
 }
 
@@ -464,7 +465,7 @@ static int handle_json_data(uint8_t *data, size_t len)
 		&hb_context.aknano_json_data.selected_target);
 
 	LOG_INF("Parsed JSON total len=%d version=%s uri=%s", 
-		len, target.custom.version, target.custom.uri);
+		len, log_strdup(target.custom.version), log_strdup(target.custom.uri));
 	return 0;
 }
 
@@ -532,7 +533,7 @@ static void response_cb(struct http_response *rsp,
 	case AKNANO_PROBE:
 		if (rsp->http_status_code != 200) {
 			LOG_WRN("Got HTTP error: %d (%s)",
-				rsp->http_status_code, rsp->http_status);
+				rsp->http_status_code, log_strdup(rsp->http_status));
 			ret = -1;
 		} else {
 			ret = get_http_data_and_length(rsp, &body_data, &body_len,
@@ -555,10 +556,11 @@ static void response_cb(struct http_response *rsp,
 				/* hb_context.code_status =	AKNANO_METADATA_ERROR; */
 			}
 
-			LOG_INF("FINAL: higher version: %d uri='%s' updatedAt='%s'", 
-				hb_context.aknano_json_data.selected_target.version, 
-				hb_context.aknano_json_data.selected_target.uri, 
-				hb_context.aknano_json_data.selected_target.updatedAt); 
+			LOG_INF("FINAL: higher version: %d uri='%s' updatedAt='%s'",
+				hb_context.aknano_json_data.selected_target.version,
+				log_strdup(hb_context.aknano_json_data.selected_target.uri),
+				log_strdup(hb_context.aknano_json_data.selected_target.updatedAt)
+				);
 
 			hb_context.dl.downloaded_size = 0;
 		}
@@ -581,7 +583,7 @@ static void response_cb(struct http_response *rsp,
 	case AKNANO_DOWNLOAD:
 		if (rsp->http_status_code != 200) {
 			LOG_WRN("Got HTTP error: %d (%s)",
-				rsp->http_status_code, rsp->http_status);
+				rsp->http_status_code, log_strdup(rsp->http_status));
 			ret = -1;
 		} else {
 			ret = get_http_data_and_length(rsp, &body_data, &body_len,
@@ -639,7 +641,7 @@ static bool send_request(enum http_method method,
 	memset(&hb_context.http_req, 0, sizeof(hb_context.http_req));
 	memset(&hb_context.recv_buf_tcp, 0, sizeof(hb_context.recv_buf_tcp));
 	hb_context.http_req.url = hb_context.url_buffer;
-	LOG_INF("hb_context.url_buffer=%s", hb_context.url_buffer);
+	LOG_INF("hb_context.url_buffer=%s", log_strdup(hb_context.url_buffer));
 	hb_context.http_req.method = method;
 	hb_context.http_req.host = CONFIG_AKNANO_SERVER;
 	hb_context.http_req.port = CONFIG_AKNANO_SERVER_PORT;
@@ -788,7 +790,8 @@ enum aknano_response aknano_probe(void)
 	}
 #endif
 
-	LOG_INF("Starting image download for uri=%s", hb_context.url_buffer);
+	LOG_INF("Starting image download for uri=%s",
+			log_strdup(hb_context.url_buffer));
 	flash_img_init(&hb_context.flash_ctx);
 	if (!send_request(HTTP_GET, AKNANO_DOWNLOAD,
 			  AKNANO_STATUS_FINISHED_NONE,
